@@ -231,7 +231,7 @@ function draw() {
 
 sensitivitySlider.addEventListener("input", () => {
   settings.sensitivity = Number(sensitivitySlider.value);
-  sensitivityLabel.textContent = settings.sensitivity.toFixed(i);
+  sensitivityLabel.textContent = settings.sensitivity.toFixed(1);
 });
 
 barCountSlider.addEventListener("input", () => {
