@@ -156,6 +156,23 @@ function animate(time) {
 // 3. seek "input" (user drags the slider):
 //      audio.currentTime = Number(seek.value)
 
+playBtn.addEventListener("click",() => {
+  if(audio.paused) {
+    audio.play();
+  } else {
+    audio.pause();
+  }
+});
+
+audio.addEventListener("timeupdate",() => {
+  seek.value = audio.currentTime;
+  timeLabel.textContent = formatTime(audio.currentTime) + " / " + formatTime(audio.duration);
+});
+
+seek.addEventListener("input",() => {
+  audio.currentTime = Number(seek.value);
+});
+
 
 // =====================================================
 //  MILESTONES 1 & 2: the draw function (runs every frame)
