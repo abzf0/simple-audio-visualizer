@@ -173,6 +173,10 @@ function draw() {
   // 2. Fill it using analyser.getByteFrequencyData(...)
   // 3. console.log it, open DevTools (F12), and watch the numbers move!
 
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(dataArray);
+
+
   // ---- MILESTONE 2 (TODO): draw the bars ----
   // 1. Clear the canvas:  ctx.clearRect(0, 0, canvas.width, canvas.height)
   // 2. Loop i from 0 to barCount - 1. Inside the loop:
@@ -182,6 +186,16 @@ function draw() {
   //      ctx.fillRect(x, y, width, height)
   //    x = i * barWidth, width = barWidth - 2
   //    y counts DOWN from the top, so the bar's top edge is canvas.height - barHeight
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  for(let i = 0; i < barCount; i++) { 
+    const value = dataArray[i * step];
+    const level = Math.min((value/255) * settings.sensitivity, 1);
+    const barHeight = level * canvas.height;
+    ctx.fillStyle = `hsl(${getHue(i, barCount)}, 90%, 60%)`;
+    ctx.fillRect(i * barWidth, canvas.height - barHeight, barWidth - 2, barHeight);
+  }
 }
 
 
@@ -198,6 +212,23 @@ function draw() {
 //
 // Then in draw(): multiply the value by settings.sensitivity (cap it with Math.min).
 
+sensitivitySlider.addEventListener("input", () => {
+  settings.sensitivity = Number(sensitivitySlider.value);
+  sensitivityLabel.textContent = settings.sensitivity.toFixed(i);
+});
+
+barCountSlider.addEventListener("input", () => {
+  settings.barCount = Number(barCountSlider);
+  barCountLabel.textContent = settings.barCount;
+});
+
+smoothingSlider.addEventListener("input", () => {
+  settings.smoothing = Number(smoothingSlider);
+  smoothingLabel.textContent = settings.smoothing;
+  if(analyser) {
+    analyser.smoothingTimeConstant = settings.smoothing;
+  }
+});
 
 // =====================================================
 //  MILESTONE 4 (TODO): color palettes
@@ -206,6 +237,10 @@ function draw() {
 // 2. In draw(): replace the fixed color with a color from the palette:
 //      ctx.fillStyle = `hsl(${getHue(i, barCount)}, 90%, 60%)`
 //    (getHue is provided. It returns a hue from 0 to 360.)
+
+paletteSelect.addEventListener("change", () => {
+  settings.palette = paletteSelect.value;
+});
 
 
 // ---------- PROVIDED: start the loop (keep this last) ----------
