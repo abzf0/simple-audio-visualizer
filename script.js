@@ -1,13 +1,7 @@
-// =====================================================
-//  VIS-01 MUSIC VISUALIZER  -  STARTER
-//  PROVIDED = already written for you.
-//  TODO     = we write it together.
-// =====================================================
-
-
-// ---------- PROVIDED: grab elements from the page ----------
 const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d"); // ctx = our "paintbrush"
+const ctx = canvas.getContext("2d");
+const stage = document.getElementById("stage");
+const playbackHint = document.getElementById("playbackHint");
 const audio = document.getElementById("audio");
 const fileInput = document.getElementById("fileInput");
 const trackLabel = document.getElementById("trackName");
@@ -19,93 +13,263 @@ const sensitivitySlider = document.getElementById("sensitivity");
 const barCountSlider = document.getElementById("barCount");
 const smoothingSlider = document.getElementById("smoothing");
 const paletteSelect = document.getElementById("palette");
+const gradientSlider = document.getElementById("gradient");
 const modeSelect = document.getElementById("mode");
 
 const sensitivityLabel = document.getElementById("sensitivityValue");
 const barCountLabel = document.getElementById("barCountValue");
 const smoothingLabel = document.getElementById("smoothingValue");
+const gradientLabel = document.getElementById("gradientValue");
 
-
-// ---------- PROVIDED: app state ----------
-// One object holds every setting. The controls change it, draw() reads it.
 const settings = {
   sensitivity: 1,
   barCount: 64,
   smoothing: 0.8,
   palette: "signal",
+  gradient: 0,
   mode: "bars",
 };
 
-
-// ---------- PROVIDED: audio plumbing ----------
-// Pipeline:  <audio> -> source -> analyser -> speakers
-// The analyser "listens" to the audio and lets us read the frequencies.
 let audioCtx;
 let analyser;
+let frequencyData;
+let objectUrl;
+let bands = [];
 
 function setupAudio() {
-  if (audioCtx) return; // only build the pipeline once
+  if (audioCtx) return;
 
   audioCtx = new AudioContext();
   analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 2048; // gives us 1024 frequency values
+  analyser.fftSize = 8192;
   analyser.smoothingTimeConstant = settings.smoothing;
+
+  frequencyData = new Float32Array(analyser.frequencyBinCount);
 
   const source = audioCtx.createMediaElementSource(audio);
   source.connect(analyser);
   analyser.connect(audioCtx.destination);
+
+  buildBands();
 }
 
-// Browsers block audio until the user interacts, so we start it on "play".
-audio.addEventListener("play", () => {
-  setupAudio();
-  audioCtx.resume();
-});
+function buildBands() {
+  if (!analyser) return;
 
-// When the user picks a file, point the <audio> tag at it and play.
+  const binHz = audioCtx.sampleRate / analyser.fftSize;
+  const lowHz = 40;
+  const highHz = Math.min(12000, audioCtx.sampleRate / 2);
+
+  bands = Array.from({ length: settings.barCount }, (_, i) => {
+    const low = lowHz * (highHz / lowHz) ** (i / settings.barCount);
+    const high = lowHz * (highHz / lowHz) ** ((i + 1) / settings.barCount);
+    const center = Math.sqrt(low * high);
+
+    return {
+      start: low / binHz,
+      end: Math.min(high / binHz, analyser.frequencyBinCount),
+      boost: Math.max(-6, Math.min(15, 3 * Math.log2(center / 250))),
+    };
+  });
+}
+
+function getBandLevel(data, band) {
+  let power = 0;
+  let weight = 0;
+
+  for (let bin = Math.floor(band.start); bin < Math.ceil(band.end); bin++) {
+    const overlap = Math.min(bin + 1, band.end) - Math.max(bin, band.start);
+
+    if (overlap <= 0 || bin >= data.length) continue;
+
+    const db = data[bin];
+    power += (Number.isFinite(db) ? 10 ** (db / 10) : 0) * overlap;
+    weight += overlap;
+  }
+
+  if (!weight || !power) return 0;
+
+  const db = 10 * Math.log10(power / weight);
+
+  if (db <= -85) return 0;
+
+  const normalized = Math.max(
+    0,
+    Math.min(1, (db + band.boost + 85) / 60)
+  );
+
+  const gate = Math.min(1, (db + 85) / 10);
+
+  return Math.min(
+    1,
+    normalized ** 0.85 * gate * settings.sensitivity
+  );
+}
+
+async function startPlayback() {
+  const requestedSource = audio.src;
+
+  try {
+    setupAudio();
+
+    const resume = audioCtx.resume();
+    const play = audio.play();
+
+    await Promise.all([resume, play]);
+  } catch (error) {
+    if (error.name !== "AbortError" && audio.src === requestedSource) {
+      playbackHint.textContent = "UNABLE TO PLAY — TRY ANOTHER AUDIO FILE";
+    }
+  }
+}
+
+function togglePlayback() {
+  if (playBtn.disabled) return;
+
+  if (audio.paused) {
+    startPlayback();
+  } else {
+    audio.pause();
+  }
+}
+
 fileInput.addEventListener("change", (event) => {
   const file = event.target.files[0];
+
   if (!file) return;
-  audio.src = URL.createObjectURL(file);
+
+  audio.pause();
+
+  if (objectUrl) {
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  objectUrl = URL.createObjectURL(file);
+  audio.src = objectUrl;
   trackLabel.textContent = file.name;
-  audio.play();
+
+  playBtn.disabled = true;
+  seek.disabled = true;
+  seek.value = 0;
+  timeLabel.textContent = "00:00 / 00:00";
+
+  stage.setAttribute("aria-disabled", "true");
+  document.body.classList.add("loaded");
+  playbackHint.textContent = "LOADING TRACK";
+
+  startPlayback();
 });
 
-
-// ---------- PROVIDED: transport helpers ----------
 function formatTime(seconds) {
+  if (!Number.isFinite(seconds)) return "00:00";
+
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
+
   return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+}
+
+function syncTime() {
+  seek.value = audio.currentTime;
+
+  timeLabel.textContent =
+    formatTime(audio.currentTime) + " / " + formatTime(audio.duration);
 }
 
 function syncTransport() {
   playBtn.textContent = audio.paused ? "PLAY" : "PAUSE";
+
   document.body.classList.toggle("playing", !audio.paused);
+
+  stage.setAttribute(
+    "aria-label",
+    audio.paused ? "Play track" : "Pause track"
+  );
+
+  playbackHint.textContent = audio.paused
+    ? "CLICK OR SPACE TO PLAY"
+    : "CLICK OR SPACE TO PAUSE";
 }
 
 audio.addEventListener("loadedmetadata", () => {
-  seek.max = audio.duration;
-  seek.disabled = false;
+  seek.max = Number.isFinite(audio.duration) ? audio.duration : 0;
+  seek.disabled = !Number.isFinite(audio.duration);
   playBtn.disabled = false;
-  document.body.classList.add("loaded");
+
+  stage.setAttribute("aria-disabled", "false");
+
+  syncTime();
+  syncTransport();
 });
+
 audio.addEventListener("play", syncTransport);
 audio.addEventListener("pause", syncTransport);
 audio.addEventListener("ended", syncTransport);
+audio.addEventListener("timeupdate", syncTime);
 
+audio.addEventListener("error", () => {
+  playBtn.disabled = true;
+  seek.disabled = true;
 
-// ---------- PROVIDED: canvas sizing ----------
+  stage.setAttribute("aria-disabled", "true");
+  stage.setAttribute("aria-label", "Unable to play track");
+
+  document.body.classList.remove("playing");
+  playbackHint.textContent = "UNABLE TO PLAY — TRY ANOTHER AUDIO FILE";
+});
+
+playBtn.addEventListener("click", togglePlayback);
+stage.addEventListener("click", togglePlayback);
+
+document.addEventListener("keydown", (event) => {
+  if (
+    event.code !== "Space" ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey
+  ) {
+    return;
+  }
+
+  if (
+    event.target.closest(
+      'input:not([type="range"]), select, textarea, button, a'
+    ) ||
+    event.target.isContentEditable
+  ) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (!event.repeat) {
+    togglePlayback();
+  }
+});
+
+stage.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+
+    if (!event.repeat) {
+      togglePlayback();
+    }
+  }
+});
+
+seek.addEventListener("input", () => {
+  audio.currentTime = Number(seek.value);
+  syncTime();
+});
+
 function resizeCanvas() {
   canvas.width = canvas.clientWidth;
   canvas.height = canvas.clientHeight;
 }
+
 resizeCanvas();
 window.addEventListener("resize", resizeCanvas);
 
-
-// ---------- PROVIDED: palettes and UI accent color ----------
-// Each palette is a hue range [start, end] on the color wheel (0-360).
 const palettes = {
   signal: [0, 40],
   acid: [60, 130],
@@ -113,121 +277,181 @@ const palettes = {
   spectrum: [0, 300],
 };
 
-// Bar i of N gets a hue somewhere between the palette's start and end.
 function getHue(i, count) {
   const [start, end] = palettes[settings.palette];
-  return start + (end - start) * (i / count);
+
+  return (
+    start +
+    (end - start) * (i / Math.max(1, count - 1)) +
+    settings.gradient
+  ) % 360;
 }
 
-// The page accent follows the palette. "spectrum" cycles through every hue.
 function updateAccent(time) {
-  let hue;
-  if (settings.palette === "spectrum") {
-    hue = (time / 40) % 360;
-  } else {
-    const [start, end] = palettes[settings.palette];
-    hue = (start + end) / 2;
-  }
-  document.documentElement.style.setProperty("--accent", `hsl(${hue}, 100%, 50%)`);
+  const [start, end] = palettes[settings.palette];
+
+  const base = settings.palette === "spectrum"
+    ? time / 40
+    : (start + end) / 2;
+
+  const hue = (base + settings.gradient) % 360;
+
+  document.documentElement.style.setProperty(
+    "--accent",
+    `hsl(${hue}, 100%, 50%)`
+  );
 }
 
+function traceWave(points) {
+  ctx.moveTo(points[0].x, points[0].y);
 
-// ---------- PROVIDED: animation loop ----------
-// Runs about 60 times per second. Each run redraws the whole canvas.
-function animate(time) {
-  requestAnimationFrame(animate);
-  updateAccent(time);
-  if (analyser) draw();
+  for (let i = 0; i < points.length - 1; i++) {
+    const current = points[i];
+    const next = points[i + 1];
+    const middle = (current.x + next.x) / 2;
+
+    ctx.bezierCurveTo(
+      middle, current.y,
+      middle, next.y,
+      next.x, next.y
+    );
+  }
 }
 
+function drawOcean(levels) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const centerY = height / 2;
 
-// =====================================================
-//  MILESTONE 0 (TODO): make the player work
-// =====================================================
-// The buttons exist but do nothing yet. Wire them to the <audio> element.
-//
-// 1. playBtn "click":
-//      if audio.paused -> audio.play(), otherwise -> audio.pause()
-//
-// 2. audio "timeupdate" (fires many times a second while playing):
-//      seek.value = audio.currentTime
-//      timeLabel.textContent = formatTime(audio.currentTime) + " / " + formatTime(audio.duration)
-//
-// 3. seek "input" (user drags the slider):
-//      audio.currentTime = Number(seek.value)
+  const smooth = levels.map((_, i) => {
+    let total = 0;
+    let weights = 0;
 
-playBtn.addEventListener("click",() => {
-  if(audio.paused) {
-    audio.play();
-  } else {
-    audio.pause();
+    for (let offset = -3; offset <= 3; offset++) {
+      const index = Math.max(
+        0,
+        Math.min(levels.length - 1, i + offset)
+      );
+
+      const weight = 4 - Math.abs(offset);
+      total += levels[index] * weight;
+      weights += weight;
+    }
+
+    return total / weights;
+  });
+
+  const gradient = ctx.createLinearGradient(0, 0, width, 0);
+
+  for (let i = 0; i <= 8; i++) {
+    gradient.addColorStop(
+      i / 8,
+      `hsl(${getHue(i, 9)}, 90%, 60%)`
+    );
   }
-});
 
-audio.addEventListener("timeupdate",() => {
-  seek.value = audio.currentTime;
-  timeLabel.textContent = formatTime(audio.currentTime) + " / " + formatTime(audio.duration);
-});
+  ctx.save();
+  ctx.fillStyle = gradient;
+  ctx.strokeStyle = gradient;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = `hsl(${getHue(1, 3)}, 90%, 60%)`;
 
-seek.addEventListener("input",() => {
-  audio.currentTime = Number(seek.value);
-});
+  for (let layer = 0; layer < 3; layer++) {
+    const scale = 1 - layer * 0.22;
+    const upper = [];
+    const lower = [];
 
+    for (let i = 0; i <= 128; i++) {
+      const position = i / 128;
+      const index =
+        Math.abs(position * 2 - 1) * (smooth.length - 1);
 
-// =====================================================
-//  MILESTONES 1 & 2: the draw function (runs every frame)
-// =====================================================
+      const left = Math.floor(index);
+      const fraction = index - left;
+
+      const level =
+        smooth[left] * (1 - fraction) +
+        smooth[Math.min(left + 1, smooth.length - 1)] * fraction;
+
+      const taper = Math.sin(Math.PI * position) ** 0.6;
+      const amplitude = level * height * 0.42 * taper * scale;
+
+      upper.push({
+        x: position * width,
+        y: centerY - amplitude,
+      });
+
+      lower.push({
+        x: position * width,
+        y: centerY + amplitude,
+      });
+    }
+
+    ctx.beginPath();
+    traceWave(upper);
+
+    const reversed = lower.reverse();
+    ctx.lineTo(reversed[0].x, reversed[0].y);
+
+    for (let i = 0; i < reversed.length - 1; i++) {
+      const current = reversed[i];
+      const next = reversed[i + 1];
+      const middle = (current.x + next.x) / 2;
+
+      ctx.bezierCurveTo(
+        middle, current.y,
+        middle, next.y,
+        next.x, next.y
+      );
+    }
+
+    ctx.closePath();
+
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 0.12;
+    ctx.fill();
+
+    ctx.shadowBlur = 12;
+    ctx.globalAlpha = 0.85 - layer * 0.2;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
 function draw() {
-  // PROVIDED: layout math. Each bar samples one frequency bin.
-  // We skip the top 35% of bins because music has almost nothing up there.
-  const barCount = settings.barCount;
-  const usableBins = Math.floor(analyser.frequencyBinCount * 0.65);
-  const step = Math.floor(usableBins / barCount);
-  const barWidth = canvas.width / barCount;
+  analyser.getFloatFrequencyData(frequencyData);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // ---- MILESTONE 1 (TODO): read the audio data ----
-  // 1. Make a Uint8Array with analyser.frequencyBinCount slots
-  // 2. Fill it using analyser.getByteFrequencyData(...)
-  // 3. console.log it, open DevTools (F12), and watch the numbers move!
+  const levels = bands.map(band =>
+    getBandLevel(frequencyData, band)
+  );
 
-  const dataArray = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(dataArray);
-
-
-  // ---- MILESTONE 2 (TODO): draw the bars ----
-  // 1. Clear the canvas:  ctx.clearRect(0, 0, canvas.width, canvas.height)
-  // 2. Loop i from 0 to barCount - 1. Inside the loop:
-  //      value     = dataArray[i * step]            (a number from 0 to 255)
-  //      barHeight = value / 255 * canvas.height    (map 0-255 to pixels)
-  //      ctx.fillStyle = "white"
-  //      ctx.fillRect(x, y, width, height)
-  //    x = i * barWidth, width = barWidth - 2
-  //    y counts DOWN from the top, so the bar's top edge is canvas.height - barHeight
-
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  for(let i = 0; i < barCount; i++) { 
-    const value = dataArray[i * step];
-    const level = Math.min((value/255) * settings.sensitivity, 1);
-    const barHeight = level * canvas.height;
-    ctx.fillStyle = `hsl(${getHue(i, barCount)}, 90%, 60%)`;
-    ctx.fillRect(i * barWidth, canvas.height - barHeight, barWidth - 2, barHeight);
+  if (settings.mode === "ocean") {
+    drawOcean(levels);
+    return;
   }
+
+  const barWidth = canvas.width / settings.barCount;
+
+  levels.forEach((level, i) => {
+    const barHeight = level * canvas.height;
+
+    ctx.fillStyle =
+      `hsl(${getHue(i, settings.barCount)}, 90%, 60%)`;
+
+    ctx.fillRect(
+      i * barWidth,
+      canvas.height - barHeight,
+      Math.max(1, barWidth - 2),
+      barHeight
+    );
+  });
 }
 
-
-// =====================================================
-//  MILESTONE 3 (TODO): connect the sliders
-// =====================================================
-// When a slider moves, update `settings` and its on-screen label.
-// Event to listen for: "input".  Remember: slider.value is a STRING -> Number(...)
-//
-//   sensitivitySlider -> settings.sensitivity, sensitivityLabel.textContent
-//   barCountSlider    -> settings.barCount,    barCountLabel.textContent
-//   smoothingSlider   -> settings.smoothing,   smoothingLabel.textContent
-//                        AND analyser.smoothingTimeConstant (if analyser exists)
-//
-// Then in draw(): multiply the value by settings.sensitivity (cap it with Math.min).
+modeSelect.addEventListener("change", () => {
+  settings.mode = modeSelect.value;
+});
 
 sensitivitySlider.addEventListener("input", () => {
   settings.sensitivity = Number(sensitivitySlider.value);
@@ -235,30 +459,118 @@ sensitivitySlider.addEventListener("input", () => {
 });
 
 barCountSlider.addEventListener("input", () => {
-  settings.barCount = Number(barCountSlider);
+  settings.barCount = Number(barCountSlider.value);
   barCountLabel.textContent = settings.barCount;
+  buildBands();
 });
 
 smoothingSlider.addEventListener("input", () => {
-  settings.smoothing = Number(smoothingSlider);
-  smoothingLabel.textContent = settings.smoothing;
-  if(analyser) {
+  settings.smoothing = Number(smoothingSlider.value);
+  smoothingLabel.textContent = settings.smoothing.toFixed(2);
+
+  if (analyser) {
     analyser.smoothingTimeConstant = settings.smoothing;
   }
 });
-
-// =====================================================
-//  MILESTONE 4 (TODO): color palettes
-// =====================================================
-// 1. paletteSelect "change": set settings.palette = paletteSelect.value
-// 2. In draw(): replace the fixed color with a color from the palette:
-//      ctx.fillStyle = `hsl(${getHue(i, barCount)}, 90%, 60%)`
-//    (getHue is provided. It returns a hue from 0 to 360.)
 
 paletteSelect.addEventListener("change", () => {
   settings.palette = paletteSelect.value;
 });
 
+gradientSlider.addEventListener("input", () => {
+  settings.gradient = Number(gradientSlider.value);
+  gradientLabel.textContent = settings.gradient + "°";
+});
 
-// ---------- PROVIDED: start the loop (keep this last) ----------
+function animate(time = 0) {
+  requestAnimationFrame(animate);
+  updateAccent(time);
+
+  if (analyser) {
+    draw();
+  }
+}
+
 animate();
+
+const overlayControls = [
+  ...document.querySelectorAll(".bar, .panel, .transport")
+];
+
+let controlsTimer;
+let draggingControl = false;
+let keyboardControls = false;
+
+function showControls() {
+  clearTimeout(controlsTimer);
+
+  document.body.classList.remove("ui-hidden");
+
+  overlayControls.forEach(control => {
+    control.inert = false;
+  });
+
+  if (
+    !audio.paused &&
+    !audio.ended &&
+    !draggingControl &&
+    !keyboardControls
+  ) {
+    controlsTimer = setTimeout(() => {
+      document.body.classList.add("ui-hidden");
+
+      overlayControls.forEach(control => {
+        control.inert = true;
+      });
+    }, 2500);
+  }
+}
+
+document.addEventListener("pointermove", () => {
+  keyboardControls = false;
+  showControls();
+});
+
+document.addEventListener("pointerdown", (event) => {
+  keyboardControls = false;
+
+  draggingControl = Boolean(
+    event.target.closest(".bar, .panel, .transport")
+  );
+
+  showControls();
+});
+
+function releaseControls() {
+  draggingControl = false;
+  showControls();
+}
+
+window.addEventListener("pointerup", releaseControls);
+window.addEventListener("pointercancel", releaseControls);
+window.addEventListener("blur", releaseControls);
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Tab") {
+    keyboardControls = true;
+  }
+
+  showControls();
+}, true);
+
+overlayControls.forEach(control => {
+  control.addEventListener("input", showControls);
+  control.addEventListener("change", showControls);
+  control.addEventListener("wheel", showControls, {
+    passive: true
+  });
+});
+
+audio.addEventListener("play", showControls);
+audio.addEventListener("pause", showControls);
+audio.addEventListener("ended", showControls);
+audio.addEventListener("error", showControls);
+
+showControls();
+
+stage.removeAttribute("title");
